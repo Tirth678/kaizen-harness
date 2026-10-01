@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { Tool } from '../types';
+import { evaluateCommand, bypassEnabled } from '../safety';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_CHARS = 20_000;
@@ -25,6 +26,16 @@ export const runCommandTool: Tool = {
 
     if (typeof command !== 'string' || command.trim().length === 0) {
       throw new Error('command must be a non-empty string');
+    }
+
+    const violations = evaluateCommand(command, { allowDangerous: bypassEnabled() });
+    if (violations.length > 0) {
+      const detail = violations.map(v => `- [${v.rule}] ${v.detail}`).join('\n');
+      throw new Error(
+        `Command blocked by the safety policy:\n${detail}\n\n` +
+          'This guard is a footgun catcher and can be bypassed by design. If you are certain ' +
+          'this is intended, ask the user to set KZN_ALLOW_DANGEROUS_COMMANDS=1.',
+      );
     }
 
     let cwd = process.cwd();

@@ -10,10 +10,10 @@
   "scripts": {
     "dev": "bun run build --watch",
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint src/**/*.ts",
     "clean": "rm -rf dist",
-    "test": "echo \"No tests yet\""
+    "test": "bun test"
   },
   "dependencies": {},
   "devDependencies": {

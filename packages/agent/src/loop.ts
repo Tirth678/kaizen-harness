@@ -6,6 +6,8 @@ export class AgentLoop {
   private agent: KaizenAgent;
   private toolRegistry: ToolRegistry;
   private isRunning: boolean = false;
+  /** Signatures of calls that already failed, so a repeat can be called out directly. */
+  private failedCalls: Map<string, number> = new Map();
 
   constructor(agent: KaizenAgent, toolRegistry: ToolRegistry) {
     this.agent = agent;
@@ -14,6 +16,7 @@ export class AgentLoop {
 
   public async run(task: string): Promise<string> {
     this.isRunning = true;
+    this.failedCalls.clear();
     this.agent.initialize(task);
 
     console.log('Starting Kaizen agent...\n');
@@ -49,10 +52,6 @@ export class AgentLoop {
           console.error(`\nError: ${decision.reasoning}`);
           this.isRunning = false;
           break;
-
-        case 'respond':
-          console.log(decision.message);
-          break;
       }
     }
 
@@ -65,6 +64,20 @@ export class AgentLoop {
 
   private async executeToolCalls(toolCalls: ModelToolCall[]): Promise<void> {
     for (const call of toolCalls) {
+      const signature = `${call.name}:${JSON.stringify(call.arguments)}`;
+      const priorFailures = this.failedCalls.get(signature) ?? 0;
+
+      if (priorFailures > 0) {
+        const rendered =
+          `ERROR This exact call already failed ${priorFailures} time(s) earlier in this run. ` +
+          `Repeating it verbatim cannot succeed. ${call.name} is the correct tool name; ` +
+          'change the arguments, choose a different tool, or finish and explain the blocker.';
+        console.log(`  <- ${call.name}: ${truncate(rendered, 400)}`);
+        this.agent.addToolResult(call, rendered);
+        this.failedCalls.set(signature, priorFailures + 1);
+        continue;
+      }
+
       console.log(`  -> ${call.name}(${summarizeArgs(call.arguments)})`);
 
       const result = await this.toolRegistry.execute({
@@ -77,6 +90,10 @@ export class AgentLoop {
         : `ERROR ${result.error}`;
 
       console.log(`  <- ${call.name}: ${truncate(rendered, 400)}`);
+
+      if (!result.success) {
+        this.failedCalls.set(signature, priorFailures + 1);
+      }
 
       this.agent.addToolResult(call, rendered);
     }

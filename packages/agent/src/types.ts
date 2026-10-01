@@ -24,11 +24,6 @@ export type AgentDecision =
       summary: string;
     }
   | {
-      action: 'respond';
-      reasoning: string;
-      message: string;
-    }
-  | {
       action: 'max_steps';
       reasoning: string;
     }

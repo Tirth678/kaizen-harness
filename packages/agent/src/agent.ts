@@ -38,7 +38,10 @@ export class KaizenAgent {
   }
 
   private systemPrompt(): string {
-    return buildSystemPrompt({ model: this.config.model });
+    return buildSystemPrompt({
+      model: this.config.model,
+      toolNames: this.tools.map(tool => tool.name),
+    });
   }
 
   public async decide(): Promise<AgentDecision> {
