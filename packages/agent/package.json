@@ -1,0 +1,26 @@
+{
+  "name": "@kaizen-harness/agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kaizen agent core - orchestrates the agent loop and decision making",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "dev": "bun run build --watch",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rm -rf dist",
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {
+    "@kaizen-harness/model": "workspace:*",
+    "@kaizen-harness/tools": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.6",
+    "typescript": "^6.0.3"
+  }
+}

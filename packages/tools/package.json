@@ -1,0 +1,23 @@
+{
+  "name": "@kaizen-harness/tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kaizen tools layer - provides the tool interface and core tool implementations",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "dev": "bun run build --watch",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rm -rf dist",
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "^1.1.6",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "kaizen-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Best-in-class coding harness, made for you and only you.",
+  "keywords": ["coding", "harness", "development", "monorepo", "typescript", "agent", "user specific"],
+  "author": "kaizen-harness",
+  "license": "MIT",
+  "packageManager": "bun@1.1.24",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "lint:fix": "eslint --fix \"**/*.{ts,tsx}\"",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
+    "type-check": "turbo run typecheck",
+    "clean": "turbo run clean",
+    "turbo": "turbo"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.6",
+    "@types/node": "^26.6.3",
+    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@typescript-eslint/parser": "^8.71.0",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.9.9",
+    "turbo": "^2.11.6",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}

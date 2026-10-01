@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@kaizen-harness/*": ["./packages/*/src"]
+    },
+    "noEmit": true
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "**/dist",
+    "build",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}
