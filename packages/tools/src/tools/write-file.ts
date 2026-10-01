@@ -1,8 +1,10 @@
+import { dirname } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { Tool } from '../types';
 
 export const writeFileTool: Tool = {
   name: 'write_file',
-  description: 'Write content to a file',
+  description: 'Write content to a file, creating parent directories as needed',
   parameters: {
     path: {
       type: 'string',
@@ -17,13 +19,25 @@ export const writeFileTool: Tool = {
   },
   async execute(params: Record<string, any>) {
     const { path, content } = params;
-    
-    // This would be implemented with actual file system access
-    // For now, return a placeholder response
+
+    if (typeof path !== 'string' || path.length === 0) {
+      throw new Error('path must be a non-empty string');
+    }
+
+    if (typeof content !== 'string') {
+      throw new Error('content must be a string');
+    }
+
+    const parent = dirname(path);
+    if (parent && parent !== '.') {
+      await mkdir(parent, { recursive: true });
+    }
+
+    await Bun.write(path, content);
+
     return {
-      success: true,
-      message: `Wrote content to file: ${path}`,
-      length: content.length,
+      path,
+      bytesWritten: Buffer.byteLength(content, 'utf8'),
     };
   },
 };

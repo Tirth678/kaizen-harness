@@ -9,11 +9,14 @@ export class ToolRegistry {
 
   async execute(call: ToolCall): Promise<ToolResult> {
     const tool = this.tools.get(call.tool);
-    
+
     if (!tool) {
+      const available = Array.from(this.tools.keys()).join(', ');
       return {
         success: false,
-        error: `Tool not found: ${call.tool}`,
+        error:
+          `Unknown tool "${call.tool}". Available tools: ${available}. ` +
+          'Call one of those exact names. Do not retry the same unknown tool name.',
       };
     }
 

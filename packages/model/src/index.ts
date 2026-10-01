@@ -1,2 +1,8 @@
 export { OpenRouterModelProvider } from './provider';
-export type { ModelMessage, ModelResponse, ModelProvider } from './types';
+export type {
+  ModelMessage,
+  ModelResponse,
+  ModelProvider,
+  ModelToolCall,
+  ToolDefinition,
+} from './types';

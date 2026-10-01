@@ -1,8 +1,7 @@
+import type { ModelMessage, ModelToolCall } from '@kaizen-harness/model';
+
 export interface AgentState {
-  conversation: Array<{
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-  }>;
+  conversation: ModelMessage[];
   context: Record<string, any>;
   step: number;
 }
@@ -13,8 +12,27 @@ export interface AgentConfig {
   model: string;
 }
 
-export type AgentDecision = {
-  action: 'continue' | 'complete' | 'error';
-  nextStep: 'analyze' | 'execute' | 'evaluate';
-  reasoning: string;
-};
+export type AgentDecision =
+  | {
+      action: 'tool_calls';
+      reasoning: string;
+      toolCalls: ModelToolCall[];
+    }
+  | {
+      action: 'finish';
+      reasoning: string;
+      summary: string;
+    }
+  | {
+      action: 'respond';
+      reasoning: string;
+      message: string;
+    }
+  | {
+      action: 'max_steps';
+      reasoning: string;
+    }
+  | {
+      action: 'error';
+      reasoning: string;
+    };

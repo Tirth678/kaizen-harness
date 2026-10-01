@@ -1,34 +1,100 @@
-import { ModelMessage, ModelResponse, ModelProvider, OpenRouterRequestSchema, OpenRouterResponseSchema, OpenRouterErrorSchema } from './types';
+import { ModelMessage, ModelResponse, ModelProvider, ModelToolCall, ToolDefinition } from './types';
 
 export class OpenRouterModelProvider implements ModelProvider {
   private apiKey: string;
   private model: string;
   private baseUrl: string;
+  private temperature: number;
+  private maxTokens: number;
 
   constructor(options?: {
     apiKey?: string;
     model?: string;
     baseUrl?: string;
+    temperature?: number;
+    maxTokens?: number;
   }) {
     this.apiKey = options?.apiKey || process.env.SK_OR_V1_KEY || '';
     this.model = options?.model || 'poolside/laguna-s-2.1';
     this.baseUrl = options?.baseUrl || 'https://openrouter.ai/api/v1';
-    
+    this.temperature = options?.temperature ?? 0.7;
+    this.maxTokens = options?.maxTokens ?? 2000;
+
     if (!this.apiKey) {
       throw new Error('OpenRouter API key is required. Set SK_OR_V1_KEY environment variable or pass apiKey option.');
     }
   }
 
-  async generate(messages: ModelMessage[]): Promise<ModelResponse> {
-    const requestData = {
+  private serializeMessage(message: ModelMessage): Record<string, unknown> {
+    switch (message.role) {
+      case 'assistant': {
+        const payload: Record<string, unknown> = {
+          role: 'assistant',
+          content: message.content,
+        };
+        if (message.toolCalls?.length) {
+          payload.tool_calls = message.toolCalls.map(call => ({
+            id: call.id,
+            type: 'function',
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.arguments),
+            },
+          }));
+        }
+        return payload;
+      }
+      case 'tool':
+        return {
+          role: 'tool',
+          content: message.content,
+          tool_call_id: message.toolCallId,
+        };
+      default:
+        return { role: message.role, content: message.content };
+    }
+  }
+
+  private buildToolSchemas(tools: ToolDefinition[]): Record<string, unknown>[] {
+    return tools.map(tool => {
+      // `required` is a boolean on our Tool.parameters but must be an array at the
+      // object level in JSON Schema. Strip it from properties to avoid schema violations.
+      const properties = Object.fromEntries(
+        Object.entries(tool.parameters).map(([name, spec]) => {
+          const { required: _required, ...rest } = spec;
+          return [name, rest];
+        })
+      );
+
+      return {
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: 'object',
+            properties,
+            required: Object.entries(tool.parameters)
+              .filter(([, spec]) => spec.required)
+              .map(([name]) => name),
+          },
+        },
+      };
+    });
+  }
+
+  async generate(messages: ModelMessage[], tools?: ToolDefinition[]): Promise<ModelResponse> {
+    const requestData: Record<string, unknown> = {
       model: this.model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 2000,
+      messages: messages.map(message => this.serializeMessage(message)),
+      temperature: this.temperature,
+      max_tokens: this.maxTokens,
     };
 
-    // Validate request
-    const validatedRequest = OpenRouterRequestSchema.parse(requestData);
+    if (tools?.length) {
+      requestData.tools = this.buildToolSchemas(tools);
+      requestData.tool_choice = 'auto';
+    }
 
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -39,41 +105,36 @@ export class OpenRouterModelProvider implements ModelProvider {
           'HTTP-Referer': 'https://github.com/kaizen-harness',
           'X-Title': 'Kaizen Code Agent',
         },
-        body: JSON.stringify(validatedRequest),
+        body: JSON.stringify(requestData),
       });
 
       const responseData = await response.json();
 
       if (!response.ok) {
-        const error = OpenRouterErrorSchema.safeParse(responseData);
-        if (error.success) {
-          throw new Error(`OpenRouter API error (${error.data.error.code}): ${error.data.error.message}`);
-        } else {
-          throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
-        }
+        const message = responseData?.error?.message || response.statusText;
+        throw new Error(`OpenRouter API error (${response.status}): ${message}`);
       }
 
-      const validatedResponse = OpenRouterResponseSchema.parse(responseData);
-
-      if (validatedResponse.choices.length === 0) {
+      const choice = responseData?.choices?.[0];
+      if (!choice) {
         throw new Error('No response from model');
       }
 
-      const choice = validatedResponse.choices[0];
-      if (!choice) {
-        throw new Error('No choices in response');
-      }
       const message = choice.message;
 
-      // Parse tool calls if present
-      const toolCalls = message.tool_calls?.map(toolCall => ({
-        name: toolCall.function.name,
-        arguments: JSON.parse(toolCall.function.arguments),
-      }));
+      let toolCalls: ModelToolCall[] | undefined;
+      if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+        toolCalls = message.tool_calls.map((call: any, index: number) => ({
+          id: call.id ?? `call_${index}`,
+          name: call.function?.name ?? '',
+          arguments: safeParseArguments(call.function?.arguments),
+        }));
+      }
 
       return {
         content: message.content || '',
         toolCalls,
+        finishReason: choice.finish_reason,
       };
     } catch (error) {
       if (error instanceof Error) {
@@ -84,13 +145,21 @@ export class OpenRouterModelProvider implements ModelProvider {
   }
 
   supportsTools(): boolean {
-    return true; // OpenRouter models support tools
+    return true;
   }
+}
 
-  // Helper method to get usage stats if needed
-  getUsageStats(): { promptTokens: number; completionTokens: number; totalTokens: number; cost: number } | null {
-    // This would track usage across multiple calls
-    // For now, we return null - actual usage is in the response
-    return null;
+function safeParseArguments(raw: unknown): Record<string, any> {
+  if (raw && typeof raw === 'object') {
+    return raw as Record<string, any>;
+  }
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
 }
