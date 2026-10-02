@@ -1,6 +1,8 @@
 import { AgentState, AgentConfig, AgentDecision } from './types';
+import type { AgentStreamEvent, DecideOptions } from './types';
 import { buildSystemPrompt } from './prompt';
 import { ModelProvider, ModelMessage, ModelToolCall, ToolDefinition } from '@kaizen-harness/model';
+import type { ModelResponse } from '@kaizen-harness/model';
 
 export const FINISH_TOOL_NAME = 'finish';
 
@@ -15,7 +17,9 @@ export class KaizenAgent {
     this.modelProvider = modelProvider;
     this.tools = tools;
     this.config = {
-      maxSteps: 50,
+      // Each step is a real billed model call. 50 was generous enough that a
+      // model stuck in a read/run loop spent real money before the run gave up.
+      maxSteps: 25,
       temperature: 0.7,
       model: 'poolside/laguna-s-2.1',
       ...config,
@@ -41,20 +45,86 @@ export class KaizenAgent {
     return buildSystemPrompt({
       model: this.config.model,
       toolNames: this.tools.map(tool => tool.name),
+      maxSteps: this.config.maxSteps,
     });
   }
 
-  public async decide(): Promise<AgentDecision> {
-    if (this.state.step >= this.config.maxSteps) {
-      return {
-        action: 'max_steps',
-        reasoning: `Reached maxSteps limit (${this.config.maxSteps}) without calling finish`,
-      };
+  public async decide(options: DecideOptions = {}): Promise<AgentDecision> {
+    let decision: AgentDecision = {
+      action: 'error',
+      reasoning: 'Agent produced no decision',
+    };
+
+    for await (const event of this.decideStream(options)) {
+      if (event.type === 'decision') {
+        decision = event.decision;
+      }
     }
 
+    return decision;
+  }
+
+  /**
+   * One reasoning step. Text deltas are yielded as they arrive so a caller can
+   * render progressively; the run always ends with a `decision`.
+   */
+  public async *decideStream(options: DecideOptions = {}): AsyncGenerator<AgentStreamEvent> {
+    if (this.state.step >= this.config.maxSteps) {
+      yield {
+        type: 'decision',
+decision: {
+            action: 'max_steps',
+            reasoning:
+              `Ran out of steps (${this.config.maxSteps}) without calling finish. ` +
+              'No verified answer was produced for this task.',
+          },
+      };
+      return;
+    }
+
+    const stream = this.modelProvider.generateStream?.bind(this.modelProvider);
+
+    // A provider that cannot stream still works; it just yields no deltas.
+    if (!stream) {
+      yield { type: 'decision', decision: await this.decideOnce(options) };
+      return;
+    }
+
+    let content = '';
+
+    try {
+      for await (const event of stream(this.state.conversation, this.tools, options)) {
+        if (event.type === 'text') {
+          content += event.delta;
+          yield { type: 'text', delta: event.delta };
+        } else {
+          yield { type: 'decision', decision: this.classify(event.response) };
+          return;
+        }
+      }
+    } catch (error) {
+      yield {
+        type: 'decision',
+        decision: {
+          action: 'error',
+          reasoning: error instanceof Error ? error.message : 'Unknown model error',
+        },
+      };
+      return;
+    }
+
+    // The stream ended without a `complete` event, so fall back to whatever text
+    // arrived rather than losing it.
+    yield {
+      type: 'decision',
+      decision: this.classify({ content, finishReason: 'stop' }),
+    };
+  }
+
+  private async decideOnce(options: DecideOptions = {}): Promise<AgentDecision> {
     let response;
     try {
-      response = await this.modelProvider.generate(this.state.conversation, this.tools);
+      response = await this.modelProvider.generate(this.state.conversation, this.tools, options);
     } catch (error) {
       return {
         action: 'error',
@@ -62,6 +132,11 @@ export class KaizenAgent {
       };
     }
 
+    return this.classify(response);
+  }
+
+  /** Records the turn and works out what it means for the run. */
+  private classify(response: ModelResponse): AgentDecision {
     this.state.step++;
 
     const toolCalls = response.toolCalls ?? [];
@@ -101,6 +176,15 @@ export class KaizenAgent {
     };
   }
 
+  /**
+   * Appends a steering message from the harness, not the model. Used when the
+   * loop can see that a run is stalling and the model needs to be told, rather
+   * than waiting for the step budget to run out with no answer.
+   */
+  public addNudge(content: string): void {
+    this.state.conversation.push({ role: 'user', content });
+  }
+
   public addToolResult(toolCall: ModelToolCall, content: string): void {
     this.state.conversation.push({
       role: 'tool',
@@ -112,6 +196,15 @@ export class KaizenAgent {
 
   public getState(): AgentState {
     return { ...this.state };
+  }
+
+  /** Number of model round-trips completed so far. */
+  public getStep(): number {
+    return this.state.step;
+  }
+
+  public getMaxSteps(): number {
+    return this.config.maxSteps;
   }
 
   public updateContext(key: string, value: any): void {

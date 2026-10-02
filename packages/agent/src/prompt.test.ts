@@ -46,7 +46,16 @@ describe('buildSystemPrompt', () => {
   test('states the finish requirement', () => {
     const prompt = buildSystemPrompt({ model: 'test/model' });
     expect(prompt).toContain('finish');
-    expect(prompt).toContain('only way to end a run');
+  });
+
+  test('does not contradict the loop on how a run may end', () => {
+    const prompt = buildSystemPrompt({ model: 'test/model' });
+
+    // KaizenAgent.decide() treats a plain-text reply with no tool calls as a
+    // finish. The prompt must not claim otherwise or the model is misled.
+    expect(prompt).not.toContain('only way to end a run');
+    expect(prompt).not.toContain('unfinished run');
+    expect(prompt).toContain('treated as your final answer');
   });
 
   test('documents the command safety policy', () => {

@@ -1,4 +1,5 @@
-import { ModelMessage, ModelResponse, ModelProvider, ModelToolCall, ToolDefinition } from './types';
+import { ModelMessage, ModelResponse, ModelProvider, ToolDefinition } from './types';
+import type { GenerateOptions, ModelStreamEvent } from './types';
 
 export class OpenRouterModelProvider implements ModelProvider {
   private apiKey: string;
@@ -83,7 +84,7 @@ export class OpenRouterModelProvider implements ModelProvider {
     });
   }
 
-  async generate(messages: ModelMessage[], tools?: ToolDefinition[]): Promise<ModelResponse> {
+  private buildRequestData(messages: ModelMessage[], tools?: ToolDefinition[]): Record<string, unknown> {
     const requestData: Record<string, unknown> = {
       model: this.model,
       messages: messages.map(message => this.serializeMessage(message)),
@@ -96,57 +97,209 @@ export class OpenRouterModelProvider implements ModelProvider {
       requestData.tool_choice = 'auto';
     }
 
+    return requestData;
+  }
+
+  async generate(
+    messages: ModelMessage[],
+    tools?: ToolDefinition[],
+    options: GenerateOptions = {}
+  ): Promise<ModelResponse> {
+    // Deliberately the same code path as streaming: collecting a stream is the
+    // non-streaming case, so the two can never disagree about wire behavior.
+    let response: ModelResponse | undefined;
+    for await (const event of this.generateStream(messages, tools, options)) {
+      if (event.type === 'complete') {
+        response = event.response;
+      }
+    }
+
+    if (!response) {
+      throw new Error('Failed to generate response: stream ended without a response');
+    }
+    return response;
+  }
+
+  async *generateStream(
+    messages: ModelMessage[],
+    tools?: ToolDefinition[],
+    options: GenerateOptions = {}
+  ): AsyncGenerator<ModelStreamEvent> {
+    let response: Response;
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
           'HTTP-Referer': 'https://github.com/kaizen-harness',
-          'X-Title': 'Kaizen Code Agent',
+          'X-Title': 'Kaizen Code',
         },
-        body: JSON.stringify(requestData),
+        body: JSON.stringify({ ...this.buildRequestData(messages, tools), stream: true }),
+        signal: options.signal ?? null,
       });
-
-      const responseData = await response.json();
-
-      if (!response.ok) {
-        const message = responseData?.error?.message || response.statusText;
-        throw new Error(`OpenRouter API error (${response.status}): ${message}`);
-      }
-
-      const choice = responseData?.choices?.[0];
-      if (!choice) {
-        throw new Error('No response from model');
-      }
-
-      const message = choice.message;
-
-      let toolCalls: ModelToolCall[] | undefined;
-      if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-        toolCalls = message.tool_calls.map((call: any, index: number) => ({
-          id: call.id ?? `call_${index}`,
-          name: call.function?.name ?? '',
-          arguments: safeParseArguments(call.function?.arguments),
-        }));
-      }
-
-      return {
-        content: message.content || '',
-        toolCalls,
-        finishReason: choice.finish_reason,
-      };
     } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to generate response: ${error.message}`);
-      }
-      throw new Error('Failed to generate response: Unknown error');
+      throw new Error(`Failed to generate response: ${describe(error)}`);
     }
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`Failed to generate response: OpenRouter API error (${response.status}): ${apiErrorMessage(detail) || response.statusText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Failed to generate response: OpenRouter returned an empty stream');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    let buffer = '';
+    let content = '';
+    let finishReason: string | undefined;
+    let done = false;
+    let sawChoice = false;
+    /** Tool calls stream as fragments keyed by their index in the array. */
+    const pendingCalls = new Map<number, { id?: string; name: string; args: string }>();
+
+    try {
+      while (!done) {
+        const { done: finished, value } = await reader.read();
+        if (finished) {
+          break;
+        }
+
+        // `stream: true` matters for multi-byte characters: a chunk can end
+        // mid-codepoint, and decoding it eagerly would corrupt the text.
+        buffer += decoder.decode(value, { stream: true });
+
+        for (const payload of drainFrames(buffer)) {
+          buffer = payload.rest;
+
+          if (payload.data === '[DONE]') {
+            done = true;
+            break;
+          }
+
+          const chunk = parseJson(payload.data);
+          const choice = chunk?.choices?.[0];
+          if (!choice) {
+            continue;
+          }
+          sawChoice = true;
+
+          const delta = choice.delta ?? {};
+          if (typeof delta.content === 'string' && delta.content.length > 0) {
+            content += delta.content;
+            yield { type: 'text', delta: delta.content };
+          }
+
+          if (Array.isArray(delta.tool_calls)) {
+            for (const [position, call] of delta.tool_calls.entries()) {
+              const index = typeof call?.index === 'number' ? call.index : position;
+              const pending = pendingCalls.get(index) ?? { name: '', args: '' };
+              if (call?.id) pending.id = call.id;
+              if (call?.function?.name) pending.name = call.function.name;
+              if (typeof call?.function?.arguments === 'string') {
+                pending.args += call.function.arguments;
+              }
+              pendingCalls.set(index, pending);
+            }
+          }
+
+          if (choice.finish_reason) {
+            finishReason = choice.finish_reason;
+          }
+        }
+      }
+    } catch (error) {
+      throw new Error(`Failed to generate response: ${describe(error)}`);
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!sawChoice) {
+      throw new Error('Failed to generate response: No response from model');
+    }
+
+    const toolCalls =
+      pendingCalls.size === 0
+        ? undefined
+        : [...pendingCalls.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([index, call]) => ({
+              id: call.id ?? `call_${index}`,
+              name: call.name,
+              arguments: safeParseArguments(call.args),
+            }));
+
+    yield {
+      type: 'complete',
+      response: { content, toolCalls, finishReason },
+    };
   }
 
   supportsTools(): boolean {
     return true;
   }
+}
+
+/**
+ * Pulls every complete SSE frame out of `buffer`, returning the payloads plus
+ * whatever trailing partial frame is left for the next read.
+ */
+function drainFrames(buffer: string): { data: string; rest: string }[] {
+  const frames: { data: string; rest: string }[] = [];
+
+  for (;;) {
+    const match = /\r?\n\r?\n/.exec(buffer);
+    if (!match) {
+      break;
+    }
+
+    const frame = buffer.slice(0, match.index);
+    buffer = buffer.slice(match.index + match[0].length);
+
+    const data = frame
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trim())
+      .join('');
+
+    if (data.length > 0) {
+      frames.push({ data, rest: '' });
+    }
+  }
+
+  // Carry the incomplete tail forward on the last entry.
+  if (frames.length > 0) {
+    frames[frames.length - 1]!.rest = buffer;
+  } else {
+    return [{ data: '', rest: buffer }];
+  }
+
+  return frames;
+}
+
+function parseJson(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function apiErrorMessage(body: string): string {
+  const parsed = parseJson(body);
+  return parsed?.error?.message ?? '';
+}
+
+function describe(error: unknown): string {
+  if (error instanceof Error) {
+    // AbortError is how a cancelled request surfaces; keep it recognizable.
+    return error.name === 'AbortError' ? 'Request aborted' : error.message;
+  }
+  return 'Unknown error';
 }
 
 function safeParseArguments(raw: unknown): Record<string, any> {

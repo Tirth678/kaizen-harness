@@ -12,14 +12,15 @@ import {
 } from '@kaizen-harness/tools';
 import { OpenRouterModelProvider } from '@kaizen-harness/model';
 import type { ModelProvider } from '@kaizen-harness/model';
+import { createRenderer } from './render';
 
-const VERSION = '0.1.0';
+const VERSION = '1.0.0';
 
 function printBanner(): void {
   console.log(`
 ╭────────────────────────────────────────────╮
 │                                            │
-│            Kaizen Code Agent               │
+│          Kaizen Code 1.0 by FlinT Labs      │
 │                                            │
 │    Your terminal-native coding partner     │
 │                                            │
@@ -29,7 +30,7 @@ function printBanner(): void {
 
 function printHelp(): void {
   console.log(`
-kzn — Kaizen coding agent
+kzn — Kaizen Code 1.0 by FlinT Labs
 
 USAGE
   kzn                  Start an interactive agent session
@@ -67,13 +68,20 @@ function buildRegistry(): ToolRegistry {
   return registry;
 }
 
+/** The loop of the run in progress, so Ctrl-C can interrupt it mid-stream. */
+let activeLoop: AgentLoop | undefined;
+
 async function runTask(task: string, provider: ModelProvider, registry: ToolRegistry): Promise<void> {
   const agent = new KaizenAgent(provider, {}, registry.list());
-  const loop = new AgentLoop(agent, registry);
+  const loop = new AgentLoop(agent, registry, createRenderer({ showThinking: true }));
 
-  const answer = await loop.run(task);
-  console.log(`\n${'─'.repeat(60)}`);
-  console.log(answer);
+  activeLoop = loop;
+  try {
+    await loop.run(task);
+  } finally {
+    activeLoop = undefined;
+  }
+  console.log('');
 }
 
 async function runInteractive(provider: ModelProvider, registry: ToolRegistry): Promise<void> {
@@ -82,12 +90,24 @@ async function runInteractive(provider: ModelProvider, registry: ToolRegistry): 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
   let running = false;
+  let interrupts = 0;
+
   rl.on('SIGINT', () => {
-    if (running) {
-      console.log('\n(agent still working — interrupt again to exit)');
+    if (!running) {
+      interrupts = 0;
+      rl.close();
       return;
     }
-    rl.close();
+
+    // First interrupt stops the run in progress, including a stream mid-answer.
+    activeLoop?.stop();
+    interrupts++;
+    if (interrupts >= 2) {
+      console.log('\nBye.');
+      rl.close();
+      return;
+    }
+    console.log('\nStopped. (press ctrl-c again to exit)');
   });
 
   try {
@@ -124,6 +144,10 @@ async function runInteractive(provider: ModelProvider, registry: ToolRegistry): 
       }
 
       running = true;
+      interrupts = 0;
+      // The readline prompt has no trailing newline, so the run's first event
+      // would otherwise be appended to the "kzn>" line.
+      console.log('');
       try {
         await runTask(input, provider, registry);
       } catch (error) {
@@ -181,4 +205,4 @@ if (import.meta.main) {
   });
 }
 
-export { main, printHelp, buildRegistry };
+export { main, printHelp, buildRegistry, VERSION };

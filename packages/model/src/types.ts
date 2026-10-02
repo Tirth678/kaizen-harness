@@ -27,6 +27,29 @@ export interface ToolDefinition {
 }
 
 export interface ModelProvider {
-  generate(messages: ModelMessage[], tools?: ToolDefinition[]): Promise<ModelResponse>;
+  generate(messages: ModelMessage[], tools?: ToolDefinition[], options?: GenerateOptions): Promise<ModelResponse>;
+  /**
+   * Streams a response incrementally. Optional so that a provider which cannot
+   * stream only has to implement `generate`; the agent falls back to it.
+   */
+  generateStream?(
+    messages: ModelMessage[],
+    tools?: ToolDefinition[],
+    options?: GenerateOptions
+  ): AsyncIterable<ModelStreamEvent>;
   supportsTools(): boolean;
 }
+
+export interface GenerateOptions {
+  /** Cancels the in-flight request, including a partially consumed stream. */
+  signal?: AbortSignal;
+}
+
+/**
+ * A response in flight. Text arrives as `delta`s so a consumer can render
+ * progressively; exactly one `complete` event terminates the stream and carries
+ * the assembled response, including any tool calls.
+ */
+export type ModelStreamEvent =
+  | { type: 'text'; delta: string }
+  | { type: 'complete'; response: ModelResponse };

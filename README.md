@@ -1,8 +1,8 @@
-# Kaizen-code
+# Kaizen Code 1.0
 
 **An agent made for you. Only you.**
 
-Kaizen-code is a terminal-native coding agent designed to work alongside you, directly where you build.
+Kaizen Code 1.0 by **FlinT Labs** is a terminal-native coding agent designed to work alongside you, directly where you build.
 
 Instead of jumping between your editor, browser, documentation, and a separate AI chat, Kaizen lives in your terminal and works with your codebase through tools.
 

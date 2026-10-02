@@ -18,4 +18,6 @@ export interface ToolResult {
   success: boolean;
   data?: any;
   error?: string;
+  /** Wall-clock execution time, populated by the agent loop. */
+  durationMs?: number;
 }

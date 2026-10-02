@@ -1,6 +1,6 @@
 {
   "name": "@kaizen-harness/cli",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Kaizen CLI application - terminal interface for the coding agent",
   "main": "dist/index.js",
@@ -14,11 +14,11 @@
   "scripts": {
     "dev": "bun run build --watch",
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint src/**/*.ts",
     "start": "bun run dist/index.js",
     "clean": "rm -rf dist",
-    "test": "echo \"No tests yet\""
+    "test": "bun test"
   },
   "dependencies": {
     "@kaizen-harness/agent": "workspace:*",

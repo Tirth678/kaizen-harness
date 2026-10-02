@@ -31,3 +31,16 @@ export type AgentDecision =
       action: 'error';
       reasoning: string;
     };
+
+export interface DecideOptions {
+  /** Cancels the model request, including a partially consumed stream. */
+  signal?: AbortSignal;
+}
+
+/**
+ * One reasoning step in flight. `text` deltas arrive as the model produces them;
+ * a `decision` always terminates the step.
+ */
+export type AgentStreamEvent =
+  | { type: 'text'; delta: string }
+  | { type: 'decision'; decision: AgentDecision };
