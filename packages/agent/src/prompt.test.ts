@@ -63,3 +63,31 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('safety policy');
   });
 });
+describe('buildSystemPrompt environment', () => {
+  test('names the working directory when given one', () => {
+    const prompt = buildSystemPrompt({
+      model: 'test/model',
+      workingDirectory: '/srv/app',
+    });
+
+    expect(prompt).toContain('/srv/app');
+  });
+
+  test('omits working directory guidance when not given one', () => {
+    const prompt = buildSystemPrompt({ model: 'test/model' });
+
+    expect(prompt).not.toContain('Your working directory is');
+  });
+
+  test('states the step budget when given one', () => {
+    const prompt = buildSystemPrompt({ model: 'test/model', maxSteps: 25 });
+
+    expect(prompt).toContain('25 model calls');
+  });
+
+  test('omits a numeric budget when not given one', () => {
+    const prompt = buildSystemPrompt({ model: 'test/model' });
+
+    expect(prompt).not.toMatch(/\*\*\d+ model calls\*\*/);
+  });
+});

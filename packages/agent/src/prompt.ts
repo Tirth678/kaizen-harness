@@ -3,15 +3,28 @@ export interface PromptContext {
   toolNames?: string[];
   /** Hard cap on model calls per run. Surfaced so the model can budget itself. */
   maxSteps?: number;
+  /** Absolute path the agent runs in. Naming it stops the model guessing. */
+  workingDirectory?: string | undefined;
 }
 
-export function buildSystemPrompt({ model, toolNames, maxSteps }: PromptContext): string {
+export function buildSystemPrompt({
+  model,
+  toolNames,
+  maxSteps,
+  workingDirectory,
+}: PromptContext): string {
   const availableTools =
     toolNames && toolNames.length > 0
       ? toolNames.map(name => `- \`${name}\``).join('\n')
       : '- (none registered)';
 
   const budgetLine = maxSteps ? `\n\nYou have at most **${maxSteps} model calls** for this task.` : '';
+
+  // Without this the model guesses at paths (/workspace, /home/user/project, ...)
+  // and burns steps on searches that cannot succeed.
+  const cwdLine = workingDirectory
+    ? `\n\nYour working directory is \`${workingDirectory}\`. Relative paths in tool calls resolve against it, and \`run_command\` starts there. Do not search other directories for the project unless the task says to; start by listing this one.`
+    : '';
 
   return `You are **Kaizen Code 1.0** by **FlinT Labs**, a terminal-native coding agent.
 
@@ -80,7 +93,7 @@ Do not assume:
 Inspect first when the answer matters.
 
 Use the current working directory and project structure to determine context.
-
+${cwdLine}
 Respect the boundaries and capabilities exposed by the harness.
 
 ---

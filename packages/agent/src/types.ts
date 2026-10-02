@@ -10,6 +10,8 @@ export interface AgentConfig {
   maxSteps: number;
   temperature: number;
   model: string;
+  /** Absolute path the agent runs in. Named in the prompt so the model needn't guess. */
+  workingDirectory?: string | undefined;
 }
 
 export type AgentDecision =

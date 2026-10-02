@@ -46,6 +46,7 @@ export class KaizenAgent {
       model: this.config.model,
       toolNames: this.tools.map(tool => tool.name),
       maxSteps: this.config.maxSteps,
+      workingDirectory: this.config.workingDirectory,
     });
   }
 
