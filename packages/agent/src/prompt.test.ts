@@ -90,4 +90,20 @@ describe('buildSystemPrompt environment', () => {
 
     expect(prompt).not.toMatch(/\*\*\d+ model calls\*\*/);
   });
+
+  test('tells the model to skip build output', () => {
+    // An observed run spent three of its reads on dist/*.d.ts files.
+    const prompt = buildSystemPrompt({ model: 'test/model' });
+
+    expect(prompt).toMatch(/Not worth reading/);
+    expect(prompt).toContain('dist/');
+    expect(prompt).toContain('already read this run');
+  });
+
+  test('makes running its own tests a requirement of finishing', () => {
+    const prompt = buildSystemPrompt({ model: 'test/model' });
+
+    expect(prompt).toMatch(/Run your own checks before finishing/);
+    expect(prompt).toMatch(/Untested test code is not a result/);
+  });
 });

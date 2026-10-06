@@ -40,12 +40,21 @@ function fakeProvider(script: ScriptedResponse[]) {
   return { provider, requests };
 }
 
-const stubTool = (name: string, execute: Tool['execute']): Tool => ({
-  name,
-  description: name,
-  parameters: {},
-  execute,
-});
+/**
+ * Stubs must declare their parameters. The registry rejects arguments a tool
+ * does not declare, so a stub with an empty schema would fail every call the test
+ * makes with real arguments.
+ */
+function stubTool(name: string, execute: Tool['execute'], args: string[] = []): Tool {
+  return {
+    name,
+    description: name,
+    parameters: Object.fromEntries(
+      args.map(arg => [arg, { type: 'string', description: arg, required: false }]),
+    ),
+    execute,
+  };
+}
 
 function build(
   script: ScriptedResponse[],
@@ -95,7 +104,7 @@ describe('AgentLoop', () => {
   });
 
   test('executes a tool call and feeds the result back keyed by the call id', async () => {
-    const echo = stubTool('echo', async params => ({ echoed: params.value }));
+    const echo = stubTool('echo', async params => ({ echoed: params.value }), ['value']);
 
     const { loop, requests } = build(
       [
@@ -129,10 +138,14 @@ describe('AgentLoop', () => {
 
   test('passes tool arguments through to the tool implementation', async () => {
     const received: Array<Record<string, any>> = [];
-    const spy = stubTool('spy', async params => {
+    const spy = stubTool(
+      'spy',
+      async params => {
       received.push(params);
       return { ok: true };
-    });
+      },
+      ['a', 'b'],
+    );
 
     const { loop } = build(
       [
@@ -147,7 +160,7 @@ describe('AgentLoop', () => {
   });
 
   test('terminates and returns the summary when the model calls finish', async () => {
-    const finish = stubTool('finish', async params => ({ finished: true, summary: params.summary }));
+    const finish = stubTool('finish', async params => ({ finished: true, summary: params.summary }), ['summary']);
 
     const { loop, requests } = build(
       [{ toolCalls: [{ id: 'c1', name: 'finish', arguments: { summary: 'work complete' } }] }],
@@ -198,10 +211,14 @@ describe('AgentLoop', () => {
     });
 
     let invocations = 0;
-    const counted = stubTool('counted', async () => {
+    const counted = stubTool(
+      'counted',
+      async () => {
       invocations++;
       throw new Error('nope');
-    });
+      },
+      ['a'],
+    );
 
     const { loop, requests } = build(
       [
@@ -228,13 +245,17 @@ expect(toolMessages[1]!.content).toContain('already failed');
 
   test('allows a retry with different arguments', async () => {
     let invocations = 0;
-    const counted = stubTool('counted', async params => {
+    const counted = stubTool(
+      'counted',
+      async params => {
       invocations++;
       if (params.mode === 'bad') {
         throw new Error('nope');
       }
       return { ok: true };
-    });
+      },
+      ['mode'],
+    );
 
     const { loop } = build(
       [

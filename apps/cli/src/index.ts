@@ -72,7 +72,14 @@ function buildRegistry(): ToolRegistry {
 let activeLoop: AgentLoop | undefined;
 
 async function runTask(task: string, provider: ModelProvider, registry: ToolRegistry): Promise<void> {
-  const agent = new KaizenAgent(provider, {}, registry.list());
+  // The prompt tells the model where it is. Without this it guesses paths from
+  // convention, and an observed run spent its whole budget searching for a
+  // directory it had simply been told the name of.
+  const agent = new KaizenAgent(
+    provider,
+    { workingDirectory: process.cwd() },
+    registry.list(),
+  );
   const loop = new AgentLoop(agent, registry, createRenderer({ showThinking: true }));
 
   activeLoop = loop;

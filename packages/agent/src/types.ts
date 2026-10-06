@@ -30,6 +30,15 @@ export type AgentDecision =
       reasoning: string;
     }
   | {
+      /**
+       * The model returned neither text nor tool calls. Recoverable: the loop
+       * tells it so and continues, because one blank turn should not discard a
+       * run that has already done real work.
+       */
+      action: 'empty';
+      reasoning: string;
+    }
+  | {
       action: 'error';
       reasoning: string;
     };

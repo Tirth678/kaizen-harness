@@ -45,12 +45,21 @@ function streamingProvider(script: Step[]) {
   };
 }
 
-const stubTool = (name: string, execute: Tool['execute']): Tool => ({
-  name,
-  description: name,
-  parameters: {},
-  execute,
-});
+/**
+ * Stubs must declare their parameters. The registry rejects arguments a tool
+ * does not declare, so a stub with an empty schema would fail every call the test
+ * makes with real arguments.
+ */
+function stubTool(name: string, execute: Tool['execute'], args: string[] = []): Tool {
+  return {
+    name,
+    description: name,
+    parameters: Object.fromEntries(
+      args.map(arg => [arg, { type: 'string', description: arg, required: false }]),
+    ),
+    execute,
+  };
+}
 
 function find<T extends AgentEvent['type']>(
   events: AgentEvent[],
@@ -286,6 +295,281 @@ describe('stop()', () => {
     );
     expect(nudges.length).toBeGreaterThan(0);
     expect(nudges[0]!.content).toMatch(/change approach/i);
+  });
+
+  test('nudges when one file is reread in slices, which looks busy but is not', async () => {
+    // The observed failure: a model reread the same test file six times as
+    // different startLine/endLine pairs. Every signature differed, so the old
+    // exact-match guard saw six distinct calls and never fired.
+    const registry = new ToolRegistry();
+    registry.register(
+      stubTool('read_file', async () => ({ content: 'x' }), ['path', 'startLine', 'endLine']),
+    );
+
+    const fake = streamingProvider(
+      Array.from({ length: 12 }, (_, i) => ({
+        toolCalls: [
+          {
+            id: `c${i}`,
+            name: 'read_file',
+            arguments: { path: '/repo/tools.test.ts', startLine: i * 10 + 1, endLine: i * 10 + 9 },
+          },
+        ],
+      })),
+    );
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 12 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    const conversation = fake.requests.at(-1) ?? [];
+    const nudges = conversation.filter(
+      m => m.role === 'user' && /without calling finish/i.test(m.content),
+    );
+    expect(nudges.length).toBeGreaterThan(0);
+    // Naming the target makes the nudge actionable instead of generic.
+    expect(nudges[0]!.content).toContain('read_file');
+    expect(nudges[0]!.content).toContain('/repo/tools.test.ts');
+  });
+
+  test('nudges when calls return a result the run has already seen', async () => {
+    // Distinct arguments, identical output: the model is not learning anything.
+    const registry = new ToolRegistry();
+    registry.register(stubTool('probe', async () => ({ same: true }), ['i']));
+
+    const fake = streamingProvider(
+      Array.from({ length: 12 }, (_, i) => ({
+        toolCalls: [{ id: `c${i}`, name: 'probe', arguments: { i } }],
+      })),
+    );
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 12 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    const conversation = fake.requests.at(-1) ?? [];
+    const nudges = conversation.filter(
+      m => m.role === 'user' && /already seen/i.test(m.content),
+    );
+    expect(nudges.length).toBeGreaterThan(0);
+  });
+
+  test('does not nudge a productive run that revisits one file only twice', async () => {
+    const registry = new ToolRegistry();
+    // Distinct content per window, as a real read_file returns. Identical
+    // payloads would be a genuine stall, which the previous test covers.
+    registry.register(
+      stubTool(
+        'read_file',
+        async params => ({ content: `${params.path}:${params.startLine}` }),
+        ['path', 'startLine', 'endLine'],
+      ),
+    );
+
+    // Two windows on one file, plus varied other work, is normal investigation.
+    const fake = streamingProvider([
+      { toolCalls: [{ id: 'c0', name: 'read_file', arguments: { path: '/a.ts', startLine: 1, endLine: 20 } }] },
+      { toolCalls: [{ id: 'c1', name: 'read_file', arguments: { path: '/a.ts', startLine: 21, endLine: 40 } }] },
+      { toolCalls: [{ id: 'c2', name: 'read_file', arguments: { path: '/b.ts', startLine: 1, endLine: 20 } }] },
+      { toolCalls: [{ id: 'c3', name: 'read_file', arguments: { path: '/c.ts', startLine: 1, endLine: 20 } }] },
+      { content: 'finished reading' },
+    ]);
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 10 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    const conversation = fake.requests.at(-1) ?? [];
+    const nudges = conversation.filter(
+      m => m.role === 'user' && /without calling finish/i.test(m.content),
+    );
+    expect(nudges).toHaveLength(0);
+  });
+
+  test('names the defect when a file tool is called without a path', async () => {
+    const registry = new ToolRegistry();
+    registry.register(stubTool('write_file', async () => ({ ok: true })));
+
+    // A model that forgot `path` used to be nudged about being stuck on `{}`.
+    // Naming the missing argument tells it what to actually fix.
+    // Enough steps to fill the stagnation window, and the missing `path` every
+    // time so the subject repeats.
+    const fake = streamingProvider(
+      Array.from({ length: 10 }, () => ({
+        toolCalls: [{ id: 'c0', name: 'write_file', arguments: { content: 'x' } }],
+      })),
+    );
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 10 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    const conversation = fake.requests.at(-1) ?? [];
+    const notice = conversation.find(
+      m => m.role === 'user' && /without moving on/.test(m.content),
+    );
+    expect(notice).toBeDefined();
+    expect(notice!.content).toMatch(/no path/);
+    // The raw serialized arguments must not leak into the nudge.
+    expect(notice!.content).not.toContain('{}');
+  });
+
+  test('recovers from an empty model response instead of ending the run', async () => {
+    const registry = new ToolRegistry();
+    registry.register(stubTool('tick', async () => ({ ok: true })));
+
+    // An observed run threw away eighteen steps of real exploration because the
+    // model returned one blank turn. A blank turn is a hiccup, not a verdict.
+    const fake = streamingProvider([
+      { toolCalls: [{ id: 'c0', name: 'tick', arguments: {} }] },
+      { deltas: [] },
+      { toolCalls: [{ id: 'c1', name: 'tick', arguments: {} }] },
+      { deltas: ['recovered and finished'] },
+    ]);
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 10 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    const answer = await loop.run('go');
+
+    expect(answer).toBe('recovered and finished');
+    // The blank turn must not be reported as the end of the run.
+    expect(find(log.events, 'error')).toHaveLength(0);
+    // And the model must be told what happened, or it may repeat the blank turn.
+    const conversation = fake.requests.at(-1) ?? [];
+    const notices = conversation.filter(
+      m => m.role === 'user' && /neither text nor a tool call/i.test(m.content),
+    );
+    expect(notices).toHaveLength(1);
+  });
+
+  test('gives up after consecutive empty responses', async () => {
+    const registry = new ToolRegistry();
+    registry.register(stubTool('tick', async () => ({ ok: true })));
+
+    // Two blanks in a row means the connection or the model is genuinely broken.
+    // Retrying forever would spin without ever making progress.
+    const fake = streamingProvider(Array.from({ length: 6 }, () => ({ deltas: [] })));
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 6 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    expect(find(log.events, 'error').length).toBeGreaterThan(0);
+    expect(find(log.events, 'error')[0]!.error.message).toMatch(/empty/i);
+    // It must stop early rather than burning the whole budget on blank turns.
+    expect(find(log.events, 'thinking').length).toBeLessThanOrEqual(4);
+  });
+
+  test('a blank turn does not count against the consecutive-empty limit once work resumes', async () => {
+    const registry = new ToolRegistry();
+    registry.register(stubTool('tick', async () => ({ ok: true })));
+
+    const fake = streamingProvider([
+      { deltas: [] },
+      { toolCalls: [{ id: 'c0', name: 'tick', arguments: {} }] },
+      { deltas: [] },
+      { toolCalls: [{ id: 'c1', name: 'tick', arguments: {} }] },
+      { deltas: ['done'] },
+    ]);
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 10 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    const answer = await loop.run('go');
+
+    expect(answer).toBe('done');
+    expect(find(log.events, 'error')).toHaveLength(0);
+  });
+
+  test('does not restate a stall on every single step', async () => {
+    const registry = new ToolRegistry();
+    registry.register(stubTool('read_file', async () => ({ ok: true }), ['path', 'startLine']));
+
+    // A run that is stuck for many steps. Nudging every step would bury the tool
+    // results that carry the signal under near-identical warnings.
+    const fake = streamingProvider(
+      Array.from({ length: 30 }, (_, i) => ({
+        toolCalls: [
+          {
+            id: `c${i}`,
+            name: 'read_file',
+            arguments: { path: '/repo/same.ts', startLine: i + 1 },
+          },
+        ],
+      })),
+    );
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 30 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    const conversation = fake.requests.at(-1) ?? [];
+    const nudges = conversation.filter(
+      m => m.role === 'user' && /without calling finish/i.test(m.content),
+    );
+
+    // Stuck for ~22 eligible steps, but the warning must stay rare enough to read.
+    expect(nudges.length).toBeGreaterThan(0);
+    expect(nudges.length).toBeLessThanOrEqual(6);
+    // The repeats escalate rather than repeating verbatim.
+    expect(new Set(nudges.map(m => m.content)).size).toBe(nudges.length);
+  });
+
+  test('does not judge a run on the first few calls', async () => {
+    const registry = new ToolRegistry();
+    registry.register(stubTool('probe', async () => ({ same: true }), ['i']));
+
+    // Identical output three times in a row is normal early probing, not a loop.
+    const fake = streamingProvider(
+      Array.from({ length: 4 }, (_, i) => ({
+        toolCalls: [{ id: `c${i}`, name: 'probe', arguments: { i } }],
+      })),
+    );
+
+    const log = createEventLog();
+    const loop = new AgentLoop(
+      new KaizenAgent(fake, { maxSteps: 4 }, registry.list()),
+      registry,
+      log.sink,
+    );
+    await loop.run('go');
+
+    const conversation = fake.requests.at(-1) ?? [];
+    const nudges = conversation.filter(
+      m => m.role === 'user' && /without calling finish/i.test(m.content),
+    );
+    expect(nudges).toHaveLength(0);
   });
 
   test('does not nudge a run that varies its calls', async () => {

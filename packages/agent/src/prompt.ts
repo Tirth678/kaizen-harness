@@ -129,6 +129,18 @@ First determine:
 
 Do not make large speculative changes when a small inspection can resolve uncertainty.
 
+### Not worth reading
+
+Skip these unless a failure specifically points at them:
+
+* build output and generated files, such as \`dist/\`, \`build/\`, \`out/\`, \`*.tsbuildinfo\`, and \`node_modules/\`
+* lockfiles and \`*.min.*\` bundles
+* source you have already read this run
+
+Each read costs a model call. Reading generated output is usually slower and no more authoritative than the source it was produced from.
+
+To check a specific region of a large file, read the range you need instead of the whole file.
+
 ### When editing
 
 Make the smallest change that correctly solves the problem.
@@ -268,6 +280,8 @@ For example:
 * configuration change → validate the configuration
 
 Do not claim something works unless you have reasonable evidence that it works.
+
+**Run your own checks before finishing.** In particular, if you wrote or changed tests, run them. Untested test code is not a result, it is a guess: a run has been observed writing test files that never executed and had three separate defects that a single test run would have caught. Verification is part of the task, not an optional extra, and it is the last thing you should give up when the budget gets tight.
 
 ---
 

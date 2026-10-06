@@ -17,9 +17,13 @@ export class KaizenAgent {
     this.modelProvider = modelProvider;
     this.tools = tools;
     this.config = {
-      // Each step is a real billed model call. 50 was generous enough that a
-      // model stuck in a read/run loop spent real money before the run gave up.
-      maxSteps: 25,
+      // Each step is a real billed model call, so this is a cost ceiling. It has
+      // to cover the work *and* the verification that follows: an observed run
+      // implementing a two-file tool correctly ran out at 25 before it ever
+      // executed its own tests. A healthy model ends the run by calling finish,
+      // so a high ceiling costs nothing until the model is actually stuck, and
+      // stagnation nudging handles that case.
+      maxSteps: 40,
       temperature: 0.7,
       model: 'poolside/laguna-s-2.1',
       ...config,
@@ -171,8 +175,12 @@ decision: {
       };
     }
 
+    // A blank turn is a protocol hiccup, not a verdict on the whole run. An
+    // observed run discarded eighteen steps of real exploration because the model
+    // happened to return nothing once. Report it as recoverable and let the loop
+    // decide, since only the loop knows how much budget is left.
     return {
-      action: 'error',
+      action: 'empty',
       reasoning: 'Model returned an empty response with no tool calls',
     };
   }

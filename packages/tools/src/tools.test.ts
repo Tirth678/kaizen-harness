@@ -91,13 +91,98 @@ describe('runCommandTool', () => {
 });
 
 describe('readFileTool', () => {
-  test('reads a file and reports its size', async () => {
+test('reads a file and reports its size', async () => {
+const dir = await tempDir();
+const path = join(dir, 'sample.txt');
+await Bun.write(path, 'contents');
+const result = await run(readFileTool, { path });
+expect(result.content).toBe('contents');
+expect(result.totalLines).toBe(1);
+expect(result.partial).toBe(false);
+  });
+
+  test('returns only the requested line range', async () => {
     const dir = await tempDir();
-    const path = join(dir, 'sample.txt');
-    await Bun.write(path, 'contents');
+    const path = join(dir, 'lines.txt');
+    await Bun.write(path, 'l1\nl2\nl3\nl4\nl5');
+    const result = await run(readFileTool, { path, startLine: 2, endLine: 4 });
+    expect(result.content).toBe('l2\nl3\nl4');
+    expect(result.startLine).toBe(2);
+    expect(result.endLine).toBe(4);
+    expect(result.totalLines).toBe(5);
+    // Nothing was withheld: the caller asked for 2-4 and got exactly 2-4.
+    expect(result.partial).toBe(false);
+  });
+
+  test('startLine alone reads forward without running to end of file', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'lines.txt');
+    await Bun.write(path, 'l1\nl2\nl3\nl4\nl5');
+    const result = await run(readFileTool, { path, startLine: 3 });
+    expect(result.content).toBe('l3\nl4\nl5');
+    expect(result.endLine).toBe(5);
+  });
+
+  test('accepts numeric strings, which models commonly send', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'lines.txt');
+    await Bun.write(path, 'l1\nl2\nl3');
+    const result = await run(readFileTool, { path, startLine: '2', endLine: '3' });
+    expect(result.content).toBe('l2\nl3');
+  });
+
+  test('clamps endLine past the end of the file', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'lines.txt');
+    await Bun.write(path, 'l1\nl2');
+    const result = await run(readFileTool, { path, startLine: 1, endLine: 999 });
+    expect(result.content).toBe('l1\nl2');
+    expect(result.partial).toBe(true);
+    expect(result.note).toContain('past the end');
+  });
+
+  test('rejects a startLine past the end of the file', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'lines.txt');
+    await Bun.write(path, 'l1\nl2');
+    await expect(run(readFileTool, { path, startLine: 50 })).rejects.toThrow(/past the end/);
+  });
+
+  test('rejects an inverted range', async () => {
+    const dir = await tempDir();
+const path = join(dir, 'lines.txt');
+await Bun.write(path, 'l1\nl2\nl3');
+await expect(run(readFileTool, { path, startLine: 3, endLine: 1 })).rejects.toThrow(
+      /must not be greater than/,
+    );
+  });
+
+  test('rejects a non-integer bound', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'lines.txt');
+await Bun.write(path, 'l1\nl2');
+    await expect(run(readFileTool, { path, startLine: 1.5 })).rejects.toThrow(/positive integer/);
+  });
+
+  test('counts lines correctly for a file with a trailing newline', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'lines.txt');
+    await Bun.write(path, 'l1\nl2\nl3\n');
     const result = await run(readFileTool, { path });
-    expect(result.content).toBe('contents');
-    expect(result.size).toBe('contents'.length);
+    expect(result.totalLines).toBe(3);
+    expect(result.content).toBe('l1\nl2\nl3');
+  });
+
+  test('caps a very large requested range so context is bounded', async () => {
+    const dir = await tempDir();
+const path = join(dir, 'big.txt');
+    const total = 5_000;
+    await Bun.write(path, Array.from({ length: total }, (_, i) => `line${i + 1}`).join('\n'));
+    const result = await run(readFileTool, { path });
+    expect(result.partial).toBe(true);
+    expect(result.totalLines).toBe(total);
+    expect(result.content.split('\n').length).toBe(2_000);
+    expect(result.note).toContain('2000');
   });
 
   test('throws when the file is missing', async () => {
@@ -125,10 +210,34 @@ describe('writeFileTool', () => {
     expect(await Bun.file(path).text()).toBe('deep');
   });
 
-  test('throws when content is missing', async () => {
+  test('throws when content is missing, naming the absent argument', async () => {
+    // An observed run retried an identical malformed call twice because the error
+    // did not distinguish "rejected" from "never arrived".
     await expect(run(writeFileTool, { path: '/tmp/whatever.txt' })).rejects.toThrow(
-      /content must be a string/,
+      /argument missing/,
     );
+  });
+
+  test('throws when path is an empty string, naming the value received', async () => {
+    await expect(run(writeFileTool, { path: '', content: 'x' })).rejects.toThrow(
+      /empty string/,
+    );
+  });
+
+  test('throws when content is not a string, reporting the type received', async () => {
+    await expect(
+      run(writeFileTool, { path: '/tmp/whatever.txt', content: 42 }),
+    ).rejects.toThrow(/Received a number/);
+  });
+
+  test('does not create a file when an argument is invalid', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'never-written.txt');
+
+    await expect(run(writeFileTool, { path: '', content: 'x' })).rejects.toThrow();
+    // Validation has to happen before any write, or a rejected call still leaves
+    // an empty or partial file behind.
+    expect(await Bun.file(path).exists()).toBe(false);
   });
 });
 

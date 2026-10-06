@@ -21,6 +21,26 @@ export class ToolRegistry {
     }
 
     try {
+      // Reject arguments the tool does not declare. Silently dropping them is how
+      // a model ends up calling read_file with a range the tool ignores and
+      // receiving the whole file, three steps in a row, with no error to correct it.
+      const unknown = Object.keys(call.parameters ?? {}).filter(
+        key => !Object.prototype.hasOwnProperty.call(tool.parameters, key),
+      );
+
+      if (unknown.length > 0) {
+        const accepted = Object.keys(tool.parameters);
+        return {
+          success: false,
+          error:
+            `"${call.tool}" does not accept argument(s): ${unknown.join(', ')}. ` +
+            (accepted.length > 0
+              ? `It accepts: ${accepted.join(', ')}. `
+              : 'It accepts no arguments. ') +
+            'Check the tool schema and call it again with only supported arguments.',
+        };
+      }
+
       const result = await tool.execute(call.parameters);
       return {
         success: true,

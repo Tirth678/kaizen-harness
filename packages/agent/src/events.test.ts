@@ -26,12 +26,21 @@ function provider(script: Scripted[]) {
   };
 }
 
-const stubTool = (name: string, execute: Tool['execute']): Tool => ({
-  name,
-  description: name,
-  parameters: {},
-  execute,
-});
+/**
+ * Stubs must declare their parameters. The registry rejects arguments a tool
+ * does not declare, so a stub with an empty schema would fail every call the test
+ * makes with real arguments.
+ */
+function stubTool(name: string, execute: Tool['execute'], args: string[] = []): Tool {
+  return {
+    name,
+    description: name,
+    parameters: Object.fromEntries(
+      args.map(arg => [arg, { type: 'string', description: arg, required: false }]),
+    ),
+    execute,
+  };
+}
 
 function build(script: Scripted[], tools: Tool[] = []) {
   const fake = provider(script);
@@ -66,7 +75,7 @@ describe('AgentLoop event stream', () => {
   });
 
   test('emits tool_start then tool_result around each call', async () => {
-    const echo = stubTool('echo', async params => ({ echoed: params.value }));
+    const echo = stubTool('echo', async params => ({ echoed: params.value }), ['value']);
 
     const { loop, events } = build(
       [
@@ -178,10 +187,14 @@ describe('AgentLoop event stream', () => {
 
   test('short-circuits an identical repeat without a second tool_start', async () => {
     let invocations = 0;
-    const counted = stubTool('counted', async () => {
-      invocations++;
-      throw new Error('nope');
-    });
+    const counted = stubTool(
+      'counted',
+      async () => {
+        invocations++;
+        throw new Error('nope');
+      },
+      ['a'],
+    );
 
     const { loop, events } = build(
       [
